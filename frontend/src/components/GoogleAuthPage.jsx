@@ -1,12 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Compass, Sparkles, ShieldCheck, CheckCircle2, User, UserPlus, 
-  LogIn, ArrowRight, Mail, Lock, KeyRound, BellRing, Send, Check, AlertCircle,
-  ExternalLink, Settings, ChevronDown, ChevronUp 
+  LogIn, ArrowRight, Mail, Lock, KeyRound, BellRing, Send, Check, AlertCircle 
 } from 'lucide-react';
 
 const SAVED_ACCOUNTS_KEY = "travelpilot_saved_real_accounts_v1";
-const SMTP_CONFIG_KEY = "travelpilot_smtp_config_v1";
 
 // Helper to decode Google JWT token
 function parseJwt(token) {
@@ -56,17 +54,6 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
   const [inputError, setInputError] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [securityNotification, setSecurityNotification] = useState(null);
-
-  // Optional SMTP Configuration (Stored securely in localStorage on this device)
-  const [smtpConfig, setSmtpConfig] = useState(() => {
-    try {
-      const stored = localStorage.getItem(SMTP_CONFIG_KEY);
-      if (stored) return JSON.parse(stored);
-    } catch (e) {}
-    return { user: "", password: "", server: "smtp.gmail.com", port: 587 };
-  });
-  const [showSmtpSettings, setShowSmtpSettings] = useState(false);
-  const [smtpSavedToast, setSmtpSavedToast] = useState(false);
 
   // Initialize official Google Identity Services (GSI) if VITE_GOOGLE_CLIENT_ID is set
   useEffect(() => {
@@ -129,21 +116,14 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
   const dispatchEmailNotification = async (user) => {
     try {
       const apiBase = import.meta.env.VITE_API_BASE || (window.location.port === "5173" ? "http://localhost:8000" : "");
-      const payload = {
-        email: user.email,
-        name: user.name,
-        provider: user.provider || "google"
-      };
-      if (smtpConfig?.user && smtpConfig?.password) {
-        payload.smtp_user = smtpConfig.user.trim();
-        payload.smtp_password = smtpConfig.password.trim();
-        payload.smtp_server = (smtpConfig.server || "smtp.gmail.com").trim();
-        payload.smtp_port = Number(smtpConfig.port) || 587;
-      }
       const res = await fetch(`${apiBase}/api/auth/send-login-notification`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          email: user.email,
+          name: user.name,
+          provider: user.provider || "google"
+        })
       });
       return await res.json();
     } catch (err) {
@@ -587,90 +567,8 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
           </form>
         )}
 
-        {/* Optional: Automated Gmail Delivery Settings (Google App Password) */}
-        <div className="pt-4 border-t border-[#ECE8E1]">
-          <button
-            type="button"
-            onClick={() => setShowSmtpSettings(!showSmtpSettings)}
-            className="w-full text-left flex items-center justify-between text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors py-1 cursor-pointer"
-          >
-            <span className="flex items-center gap-1.5">
-              <Settings className="w-3.5 h-3.5 text-[#FA5B0F]" />
-              <span>Automated Background Gmail Delivery Settings (Optional)</span>
-            </span>
-            {showSmtpSettings ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </button>
-
-          {showSmtpSettings && (
-            <div className="mt-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-3 animate-fadeIn">
-              <p className="text-[11px] text-slate-600 leading-relaxed">
-                To have TripSaathi deliver security alerts automatically to your Gmail inbox in the background, enter your Gmail and 16-character <strong>Google App Password</strong> (generated from your Google Account).
-              </p>
-
-              <div>
-                <label className="text-[10px] font-extrabold uppercase text-slate-600 block mb-1">
-                  Sender Gmail Address
-                </label>
-                <input
-                  type="email"
-                  placeholder="your.email@gmail.com"
-                  value={smtpConfig.user}
-                  onChange={(e) => setSmtpConfig(prev => ({ ...prev, user: e.target.value }))}
-                  className="w-full px-3 py-2 rounded-lg bg-white border border-slate-200 text-slate-900 text-xs font-semibold focus:outline-none focus:border-[#4285F4]"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-[10px] font-extrabold uppercase text-slate-600">
-                    Google 16-Letter App Password
-                  </label>
-                  <a
-                    href="https://myaccount.google.com/apppasswords"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[10px] text-[#4285F4] hover:underline font-bold flex items-center gap-0.5"
-                  >
-                    <span>Generate App Password</span>
-                    <ExternalLink className="w-2.5 h-2.5" />
-                  </a>
-                </div>
-                <input
-                  type="password"
-                  placeholder="xxxx xxxx xxxx xxxx"
-                  value={smtpConfig.password}
-                  onChange={(e) => setSmtpConfig(prev => ({ ...prev, password: e.target.value }))}
-                  className="w-full px-3 py-2 rounded-lg bg-white border border-slate-200 text-slate-900 text-xs font-semibold focus:outline-none focus:border-[#4285F4]"
-                />
-              </div>
-
-              <div className="flex items-center justify-between pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    try {
-                      localStorage.setItem(SMTP_CONFIG_KEY, JSON.stringify(smtpConfig));
-                      setSmtpSavedToast(true);
-                      setTimeout(() => setSmtpSavedToast(false), 2500);
-                    } catch (e) {}
-                  }}
-                  className="py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-[#FA5B0F] text-white text-[11px] font-bold transition-colors cursor-pointer"
-                >
-                  Save App Password
-                </button>
-                {smtpSavedToast && (
-                  <span className="text-[11px] font-bold text-emerald-600 flex items-center gap-1">
-                    <Check className="w-3.5 h-3.5" />
-                    Saved securely on device!
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-
         {/* Security & Tab-Closure Refresh Notice */}
-        <div className="pt-4 mt-4 border-t border-[#ECE8E1] text-center space-y-2">
+        <div className="pt-4 mt-6 border-t border-[#ECE8E1] text-center space-y-2">
           <div className="flex items-center justify-center gap-4 text-[11px] text-slate-500 font-medium flex-wrap">
             <span className="flex items-center gap-1">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
