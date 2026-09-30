@@ -211,10 +211,10 @@ def send_login_notification(req: LoginNotificationRequest):
     """
     logger.info(f"Dispatching security notification email to: {req.email} for provider: {req.provider}")
     
-    smtp_server = req.smtp_server or os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+    smtp_server = req.smtp_server or os.environ.get("SMTP_SERVER") or "smtp.gmail.com"
     smtp_port = req.smtp_port or int(os.environ.get("SMTP_PORT", 587))
-    smtp_user = req.smtp_user or os.environ.get("SMTP_USER") or os.environ.get("GMAIL_USER")
-    smtp_password = req.smtp_password or os.environ.get("SMTP_PASSWORD") or os.environ.get("GMAIL_APP_PASSWORD")
+    smtp_user = req.smtp_user or os.environ.get("SMTP_USER") or os.environ.get("GMAIL_USER") or "ishan145sharma@gmail.com"
+    smtp_password = req.smtp_password or os.environ.get("SMTP_PASSWORD") or os.environ.get("GMAIL_APP_PASSWORD") or "wzvbmfectziwzaag"
     
     email_sent = False
     delivery_error = None
@@ -222,6 +222,7 @@ def send_login_notification(req: LoginNotificationRequest):
     if smtp_user and smtp_password:
         try:
             import smtplib
+            import ssl
             from email.mime.text import MIMEText
             from email.mime.multipart import MIMEMultipart
             
@@ -273,8 +274,9 @@ TripSaathi Tour AI Security Team
             msg.attach(MIMEText(text_body, 'plain'))
             msg.attach(MIMEText(html_body, 'html'))
             
-            with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
-                server.starttls()
+            context = ssl.create_default_context()
+            with smtplib.SMTP(smtp_server, smtp_port, timeout=12) as server:
+                server.starttls(context=context)
                 server.login(smtp_user, smtp_password)
                 server.send_message(msg)
             email_sent = True
