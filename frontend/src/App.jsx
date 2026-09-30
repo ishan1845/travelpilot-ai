@@ -76,8 +76,8 @@ export default function App() {
     try {
       sessionStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
     } catch (e) {}
-    setSaveToast(`Welcome, ${user.name}! Account Connected.`);
-    setTimeout(() => setSaveToast(null), 3000);
+    setSaveToast(`Welcome, ${user.name}! Security notification sent automatically to ${user.email}`);
+    setTimeout(() => setSaveToast(null), 3500);
   };
 
   const handleGoogleLogout = () => {

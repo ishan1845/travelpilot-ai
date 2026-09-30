@@ -8,15 +8,6 @@ import {
 const SAVED_ACCOUNTS_KEY = "travelpilot_saved_real_accounts_v1";
 const SMTP_CONFIG_KEY = "travelpilot_smtp_config_v1";
 
-// Helper to generate official Google Web Mail compose URL with pre-filled security notice
-function createGmailComposeUrl(email, name) {
-  const subject = encodeURIComponent("Security Alert: Google Account Connected with TripSaathi Tour AI");
-  const body = encodeURIComponent(
-    `Hello ${name || 'Explorer'},\n\nYour Google Account (${email}) has been successfully linked and shared with TripSaathi Tour AI.\n\nTime: ${new Date().toLocaleString('en-IN')}\nApp: TripSaathi Tour AI (Bharat & Global)\nStatus: Connected & Verified\n\nIf this was you, you can safely continue exploring and planning your grounded itineraries.\nIf you did not authorize this, please sign out immediately from the TripSaathi navigation bar.\n\nWarm regards,\nTripSaathi Tour AI Security Team`
-  );
-  return `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(email)}&su=${subject}&body=${body}`;
-}
-
 // Helper to decode Google JWT token
 function parseJwt(token) {
   try {
@@ -162,26 +153,25 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
   };
 
   const handleSelectAccount = (account) => {
-    // Automatically trigger the official Gmail compose URL in a new tab so the email is dispatched to their email address
-    const gmailUrl = createGmailComposeUrl(account.email, account.name);
-    try {
-      window.open(gmailUrl, '_blank', 'noopener,noreferrer');
-    } catch (e) {
-      console.warn("Auto-open notice:", e);
-    }
-    
-    // Automatically dispatch backend notification and log into TripSaathi
-    completeLoginWithSecurityNotification(account);
+    // 1. Immediately save/update this account in the saved real accounts list in localStorage
+    setSavedAccounts(prev => {
+      const filtered = prev.filter(a => a.email.toLowerCase() !== account.email.toLowerCase());
+      const updated = [account, ...filtered];
+      try {
+        localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
+    });
+
+    // 2. Automatically dispatch notification to the given email address in the background without user input
+    dispatchEmailNotification(account);
+
+    // 3. Immediately sign in the user
+    onLogin(account);
   };
 
-  const completeLoginWithSecurityNotification = async (user) => {
-    setIsProcessing(true);
-    setInputError("");
-
-    // Trigger notification to the user's Gmail/Email API
-    await dispatchEmailNotification(user);
-
-    // Save/update this account in the saved real accounts list in localStorage
+  const completeLoginWithSecurityNotification = (user) => {
+    // 1. Immediately save/update this account
     setSavedAccounts(prev => {
       const filtered = prev.filter(a => a.email.toLowerCase() !== user.email.toLowerCase());
       const updated = [user, ...filtered];
@@ -191,19 +181,11 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
       return updated;
     });
 
-    // Show on-screen confirmation of automated email security alert
-    setSecurityNotification({
-      email: user.email,
-      name: user.name,
-      provider: user.provider || "google"
-    });
+    // 2. Automatically dispatch notification to the given email address in the background
+    dispatchEmailNotification(user);
 
-    setIsProcessing(false);
-
-    // Automatically proceed to TripSaathi without requiring any extra clicks
-    setTimeout(() => {
-      onLogin(user);
-    }, 1200);
+    // 3. Immediately sign in the user
+    onLogin(user);
   };
 
   // Google account submission
@@ -234,12 +216,6 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
       lastLogin: "Active Now"
     };
 
-    // Automatically trigger official Gmail in new tab
-    const gmailUrl = createGmailComposeUrl(realGoogleUser.email, realGoogleUser.name);
-    try {
-      window.open(gmailUrl, '_blank', 'noopener,noreferrer');
-    } catch (e) {}
-
     completeLoginWithSecurityNotification(realGoogleUser);
   };
 
@@ -268,12 +244,6 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
       provider: "email",
       lastLogin: "Active Now"
     };
-
-    // Automatically trigger official Gmail in new tab
-    const gmailUrl = createGmailComposeUrl(emailUser.email, emailUser.name);
-    try {
-      window.open(gmailUrl, '_blank', 'noopener,noreferrer');
-    } catch (e) {}
 
     completeLoginWithSecurityNotification(emailUser);
   };
