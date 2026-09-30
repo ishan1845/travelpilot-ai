@@ -211,10 +211,10 @@ def send_login_notification(req: LoginNotificationRequest):
     """
     logger.info(f"Dispatching security notification email to: {req.email} for provider: {req.provider}")
     
-    smtp_server = req.smtp_server or os.environ.get("SMTP_SERVER") or "smtp.gmail.com"
+    smtp_server = req.smtp_server or os.environ.get("SMTP_SERVER", "smtp.gmail.com")
     smtp_port = req.smtp_port or int(os.environ.get("SMTP_PORT", 587))
-    smtp_user = req.smtp_user or os.environ.get("SMTP_USER") or os.environ.get("GMAIL_USER") or "ishan145sharma@gmail.com"
-    smtp_password = req.smtp_password or os.environ.get("SMTP_PASSWORD") or os.environ.get("GMAIL_APP_PASSWORD") or "wzvbmfectziwzaag"
+    smtp_user = req.smtp_user or os.environ.get("SMTP_USER") or os.environ.get("GMAIL_USER")
+    smtp_password = req.smtp_password or os.environ.get("SMTP_PASSWORD") or os.environ.get("GMAIL_APP_PASSWORD")
     
     email_sent = False
     delivery_error = None
