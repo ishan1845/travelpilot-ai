@@ -1,5 +1,5 @@
 import React from 'react';
-import { Compass, Sparkles, PlaneTakeoff, Bookmark, Globe, IndianRupee, Phone, Mail, Clock, LogOut, UserCheck } from 'lucide-react';
+import { Compass, Sparkles, PlaneTakeoff, Bookmark, Globe, IndianRupee, Phone, Mail, Clock, LogOut, UserCheck, Users } from 'lucide-react';
 
 export default function Navbar({ 
   activePage, 
@@ -157,6 +157,17 @@ export default function Navbar({
                     </span>
                   </div>
                 </div>
+
+                {/* Switch Google Account Button */}
+                <button
+                  type="button"
+                  onClick={onSwitchAccount}
+                  className="p-2 sm:px-2.5 sm:py-1.5 text-slate-700 hover:text-[#4285F4] hover:bg-sky-50 rounded-xl border border-slate-200 hover:border-sky-300 transition-colors cursor-pointer text-xs font-bold flex items-center gap-1.5"
+                  title="Switch from one Google account to another"
+                >
+                  <Users className="w-3.5 h-3.5 text-[#4285F4]" />
+                  <span className="hidden sm:inline">Switch Account</span>
+                </button>
 
                 {/* Logout Button */}
                 <button
