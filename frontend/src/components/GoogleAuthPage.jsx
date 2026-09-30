@@ -1,10 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Compass, Sparkles, ShieldCheck, CheckCircle2, User, UserPlus, 
-  LogIn, ArrowRight, Mail, Lock, KeyRound, BellRing, Send, Check, AlertCircle 
+  LogIn, ArrowRight, Mail, Lock, KeyRound, BellRing, Send, Check, AlertCircle,
+  ExternalLink, Settings, ChevronDown, ChevronUp 
 } from 'lucide-react';
 
 const SAVED_ACCOUNTS_KEY = "travelpilot_saved_real_accounts_v1";
+const SMTP_CONFIG_KEY = "travelpilot_smtp_config_v1";
+
+// Helper to generate official Google Web Mail compose URL with pre-filled security notice
+function createGmailComposeUrl(email, name) {
+  const subject = encodeURIComponent("Security Alert: Google Account Connected with TripSaathi Tour AI");
+  const body = encodeURIComponent(
+    `Hello ${name || 'Explorer'},\n\nYour Google Account (${email}) has been successfully linked and shared with TripSaathi Tour AI.\n\nTime: ${new Date().toLocaleString('en-IN')}\nApp: TripSaathi Tour AI (Bharat & Global)\nStatus: Connected & Verified\n\nIf this was you, you can safely continue exploring and planning your grounded itineraries.\nIf you did not authorize this, please sign out immediately from the TripSaathi navigation bar.\n\nWarm regards,\nTripSaathi Tour AI Security Team`
+  );
+  return `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(email)}&su=${subject}&body=${body}`;
+}
 
 // Helper to decode Google JWT token
 function parseJwt(token) {
@@ -54,6 +65,17 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
   const [inputError, setInputError] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [securityNotification, setSecurityNotification] = useState(null);
+
+  // Optional SMTP Configuration (Stored securely in localStorage on this device)
+  const [smtpConfig, setSmtpConfig] = useState(() => {
+    try {
+      const stored = localStorage.getItem(SMTP_CONFIG_KEY);
+      if (stored) return JSON.parse(stored);
+    } catch (e) {}
+    return { user: "", password: "", server: "smtp.gmail.com", port: 587 };
+  });
+  const [showSmtpSettings, setShowSmtpSettings] = useState(false);
+  const [smtpSavedToast, setSmtpSavedToast] = useState(false);
 
   // Initialize official Google Identity Services (GSI) if VITE_GOOGLE_CLIENT_ID is set
   useEffect(() => {
@@ -116,19 +138,26 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
   const dispatchEmailNotification = async (user) => {
     try {
       const apiBase = import.meta.env.VITE_API_BASE || (window.location.port === "5173" ? "http://localhost:8000" : "");
+      const payload = {
+        email: user.email,
+        name: user.name,
+        provider: user.provider || "google"
+      };
+      if (smtpConfig?.user && smtpConfig?.password) {
+        payload.smtp_user = smtpConfig.user.trim();
+        payload.smtp_password = smtpConfig.password.trim();
+        payload.smtp_server = (smtpConfig.server || "smtp.gmail.com").trim();
+        payload.smtp_port = Number(smtpConfig.port) || 587;
+      }
       const res = await fetch(`${apiBase}/api/auth/send-login-notification`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: user.email,
-          name: user.name,
-          provider: user.provider || "google"
-        })
+        body: JSON.stringify(payload)
       });
       return await res.json();
     } catch (err) {
       console.warn("Notification dispatch notice:", err);
-      return { status: "dispatched", email: user.email };
+      return { status: "fallback", email: user.email, email_dispatched: false };
     }
   };
 
@@ -137,7 +166,7 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
     setInputError("");
 
     // Trigger notification to the user's Gmail/Email
-    await dispatchEmailNotification(user);
+    const res = await dispatchEmailNotification(user);
 
     // Save/update this account in the saved real accounts list in localStorage
     setSavedAccounts(prev => {
@@ -149,17 +178,27 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
       return updated;
     });
 
+    const isDirectSmtpSent = Boolean(res && res.email_dispatched);
+    const gmailUrl = createGmailComposeUrl(user.email, user.name);
+
     // Show on-screen confirmation of email security alert
     setSecurityNotification({
       email: user.email,
       name: user.name,
-      provider: user.provider || "google"
+      provider: user.provider || "google",
+      smtpSent: isDirectSmtpSent,
+      gmailUrl,
+      userObj: user
     });
 
-    setTimeout(() => {
-      setIsProcessing(false);
-      onLogin(user);
-    }, 1800);
+    setIsProcessing(false);
+
+    // If SMTP delivered it directly, log in automatically after a brief moment
+    if (isDirectSmtpSent) {
+      setTimeout(() => {
+        onLogin(user);
+      }, 2500);
+    }
   };
 
   // Google account submission
@@ -263,15 +302,57 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
 
         {/* Security Notification Sent Alert Modal / Banner */}
         {securityNotification && (
-          <div className="mb-6 p-4 rounded-2xl bg-emerald-50 border-2 border-emerald-400 text-emerald-950 text-xs shadow-md animate-fadeIn space-y-2">
-            <div className="flex items-center gap-2 font-black text-emerald-800 text-sm">
-              <BellRing className="w-4 h-4 text-emerald-600 animate-bounce" />
-              <span>Security Notification Dispatched</span>
+          <div className={`mb-6 p-4 sm:p-5 rounded-2xl border-2 text-xs shadow-lg animate-fadeIn space-y-3 ${
+            securityNotification.smtpSent
+              ? "bg-emerald-50 border-emerald-400 text-emerald-950"
+              : "bg-sky-50 border-sky-300 text-slate-900"
+          }`}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 font-black text-sm">
+                <BellRing className={`w-4 h-4 animate-bounce ${securityNotification.smtpSent ? "text-emerald-600" : "text-[#4285F4]"}`} />
+                <span className={securityNotification.smtpSent ? "text-emerald-800" : "text-[#19202E]"}>
+                  {securityNotification.smtpSent ? "Security Alert Sent Directly to Inbox" : "Google Account Connected with TripSaathi"}
+                </span>
+              </div>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600 truncate max-w-[160px]">
+                {securityNotification.email}
+              </span>
             </div>
-            <p className="font-semibold text-emerald-900 leading-relaxed">
-              A security notification has been sent to your Gmail account (<strong>{securityNotification.email}</strong>) confirming that this account is now securely linked with TripSaathi Tour AI.
-            </p>
-            <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 pt-1">
+
+            {securityNotification.smtpSent ? (
+              <p className="font-semibold text-emerald-900 leading-relaxed">
+                ✅ Official security alert has been dispatched directly through SMTP to your Gmail inbox (<strong>{securityNotification.email}</strong>). Redirecting to your active session...
+              </p>
+            ) : (
+              <div className="space-y-2.5">
+                <p className="font-medium text-slate-700 leading-relaxed">
+                  Your Google account (<strong>{securityNotification.email}</strong>) is securely linked with TripSaathi Tour AI. To ensure the notification arrives physically inside your Gmail inbox, click below to open official Gmail with the pre-filled security notice:
+                </p>
+
+                <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                  <a
+                    href={securityNotification.gmailUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="py-2.5 px-4 rounded-xl bg-[#4285F4] hover:bg-[#3367D6] text-white font-black text-xs flex items-center justify-center gap-2 shadow-sm transition-all"
+                  >
+                    <Mail className="w-4 h-4" />
+                    <span>📩 Deliver Notification to My Gmail Inbox →</span>
+                    <ExternalLink className="w-3.5 h-3.5 opacity-80" />
+                  </a>
+
+                  <button
+                    type="button"
+                    onClick={() => onLogin(securityNotification.userObj)}
+                    className="py-2.5 px-4 rounded-xl bg-[#19202E] hover:bg-[#FA5B0F] text-white font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-all"
+                  >
+                    <span>Continue to TripSaathi →</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500 pt-2 border-t border-slate-200/60">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
               <span>Status: Authenticated • Session active for current tab</span>
             </div>
@@ -556,8 +637,90 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
           </form>
         )}
 
+        {/* Optional: Automated Gmail Delivery Settings (Google App Password) */}
+        <div className="pt-4 border-t border-[#ECE8E1]">
+          <button
+            type="button"
+            onClick={() => setShowSmtpSettings(!showSmtpSettings)}
+            className="w-full text-left flex items-center justify-between text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors py-1 cursor-pointer"
+          >
+            <span className="flex items-center gap-1.5">
+              <Settings className="w-3.5 h-3.5 text-[#FA5B0F]" />
+              <span>Automated Background Gmail Delivery Settings (Optional)</span>
+            </span>
+            {showSmtpSettings ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </button>
+
+          {showSmtpSettings && (
+            <div className="mt-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-3 animate-fadeIn">
+              <p className="text-[11px] text-slate-600 leading-relaxed">
+                To have TripSaathi deliver security alerts automatically to your Gmail inbox in the background, enter your Gmail and 16-character <strong>Google App Password</strong> (generated from your Google Account).
+              </p>
+
+              <div>
+                <label className="text-[10px] font-extrabold uppercase text-slate-600 block mb-1">
+                  Sender Gmail Address
+                </label>
+                <input
+                  type="email"
+                  placeholder="your.email@gmail.com"
+                  value={smtpConfig.user}
+                  onChange={(e) => setSmtpConfig(prev => ({ ...prev, user: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg bg-white border border-slate-200 text-slate-900 text-xs font-semibold focus:outline-none focus:border-[#4285F4]"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[10px] font-extrabold uppercase text-slate-600">
+                    Google 16-Letter App Password
+                  </label>
+                  <a
+                    href="https://myaccount.google.com/apppasswords"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[10px] text-[#4285F4] hover:underline font-bold flex items-center gap-0.5"
+                  >
+                    <span>Generate App Password</span>
+                    <ExternalLink className="w-2.5 h-2.5" />
+                  </a>
+                </div>
+                <input
+                  type="password"
+                  placeholder="xxxx xxxx xxxx xxxx"
+                  value={smtpConfig.password}
+                  onChange={(e) => setSmtpConfig(prev => ({ ...prev, password: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg bg-white border border-slate-200 text-slate-900 text-xs font-semibold focus:outline-none focus:border-[#4285F4]"
+                />
+              </div>
+
+              <div className="flex items-center justify-between pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      localStorage.setItem(SMTP_CONFIG_KEY, JSON.stringify(smtpConfig));
+                      setSmtpSavedToast(true);
+                      setTimeout(() => setSmtpSavedToast(false), 2500);
+                    } catch (e) {}
+                  }}
+                  className="py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-[#FA5B0F] text-white text-[11px] font-bold transition-colors cursor-pointer"
+                >
+                  Save App Password
+                </button>
+                {smtpSavedToast && (
+                  <span className="text-[11px] font-bold text-emerald-600 flex items-center gap-1">
+                    <Check className="w-3.5 h-3.5" />
+                    Saved securely on device!
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Security & Tab-Closure Refresh Notice */}
-        <div className="pt-4 mt-6 border-t border-[#ECE8E1] text-center space-y-2">
+        <div className="pt-4 mt-4 border-t border-[#ECE8E1] text-center space-y-2">
           <div className="flex items-center justify-center gap-4 text-[11px] text-slate-500 font-medium flex-wrap">
             <span className="flex items-center gap-1">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />

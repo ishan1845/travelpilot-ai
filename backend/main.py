@@ -192,38 +192,45 @@ def resequence_delay_endpoint(request: ResequenceDelayRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 from pydantic import BaseModel
+from typing import Optional
 
 class LoginNotificationRequest(BaseModel):
     email: str
     name: str = "Explorer"
     provider: str = "google"
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
+    smtp_server: Optional[str] = None
+    smtp_port: Optional[int] = None
 
 @app.post("/api/auth/send-login-notification")
 def send_login_notification(req: LoginNotificationRequest):
     """
-    Sends a security notification to the user's Gmail/Email confirming that
+    Sends a real security notification to the user's Gmail/Email confirming that
     this Google account is shared with TripSaathi Tour AI.
     """
     logger.info(f"Dispatching security notification email to: {req.email} for provider: {req.provider}")
     
-    smtp_server = os.environ.get("SMTP_SERVER")
-    smtp_port = int(os.environ.get("SMTP_PORT", 587))
-    smtp_user = os.environ.get("SMTP_USER")
-    smtp_password = os.environ.get("SMTP_PASSWORD")
+    smtp_server = req.smtp_server or os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = req.smtp_port or int(os.environ.get("SMTP_PORT", 587))
+    smtp_user = req.smtp_user or os.environ.get("SMTP_USER") or os.environ.get("GMAIL_USER")
+    smtp_password = req.smtp_password or os.environ.get("SMTP_PASSWORD") or os.environ.get("GMAIL_APP_PASSWORD")
     
     email_sent = False
-    if smtp_server and smtp_user and smtp_password:
+    delivery_error = None
+    
+    if smtp_user and smtp_password:
         try:
             import smtplib
             from email.mime.text import MIMEText
             from email.mime.multipart import MIMEMultipart
             
-            msg = MIMEMultipart()
-            msg['From'] = smtp_user
+            msg = MIMEMultipart("alternative")
+            msg['From'] = f"TripSaathi Tour AI Security <{smtp_user}>"
             msg['To'] = req.email
-            msg['Subject'] = "Security Alert: Google Account Connected with TripSaathi"
+            msg['Subject'] = "Security Alert: Google Account Connected with TripSaathi Tour AI"
             
-            body = f"""Hello {req.name},
+            text_body = f"""Hello {req.name},
 
 Your Google Account ({req.email}) has been successfully linked and shared with TripSaathi Tour AI.
 
@@ -237,22 +244,55 @@ If you did not authorize this, please sign out immediately from the TripSaathi n
 Warm regards,
 TripSaathi Tour AI Security Team
 """
-            msg.attach(MIMEText(body, 'plain'))
-            with smtplib.SMTP(smtp_server, smtp_port) as server:
+            html_body = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #ECE8E1; border-radius: 16px; background-color: #ffffff;">
+                <div style="text-align: center; margin-bottom: 20px;">
+                    <h2 style="color: #19202E; margin: 0;">Trip<span style="color: #FA5B0F;">Saathi</span> Tour AI</h2>
+                    <p style="color: #64748b; font-size: 13px; margin: 4px 0 0 0;">Grounded Multi-Modal Journey Planner</p>
+                </div>
+                <div style="background-color: #f8fafc; border-left: 4px solid #FA5B0F; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
+                    <h3 style="color: #0f172a; margin: 0 0 8px 0; font-size: 16px;">Security Alert: Account Connected</h3>
+                    <p style="color: #334155; font-size: 14px; margin: 0; line-height: 1.5;">
+                        Hello <strong>{req.name}</strong>, your Google account (<strong>{req.email}</strong>) is now shared and connected with TripSaathi Tour AI.
+                    </p>
+                </div>
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px; color: #475569;">
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Status:</td><td style="color: #16a34a; font-weight: bold;">Active Connected Session</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Provider:</td><td>{req.provider.capitalize()} Authentication</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Platform:</td><td>TripSaathi Bharat & Global Explorer</td></tr>
+                </table>
+                <p style="color: #64748b; font-size: 12px; line-height: 1.5;">
+                    If you authorized this sign-in, no further action is required. If you did not authorize this, please sign out immediately from the navigation bar.
+                </p>
+                <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+                <p style="color: #94a3b8; font-size: 11px; text-align: center; margin: 0;">
+                    TripSaathi Tour AI • Official Security Notification
+                </p>
+            </div>
+            """
+            msg.attach(MIMEText(text_body, 'plain'))
+            msg.attach(MIMEText(html_body, 'html'))
+            
+            with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
                 server.starttls()
                 server.login(smtp_user, smtp_password)
                 server.send_message(msg)
             email_sent = True
-            logger.info(f"Live SMTP email sent to {req.email}")
+            logger.info(f"Live SMTP email sent successfully to {req.email}")
         except Exception as e:
-            logger.warning(f"SMTP send failed (fallback to verified notification): {e}")
+            delivery_error = str(e)
+            logger.warning(f"SMTP send failed: {e}")
+    else:
+        delivery_error = "Server SMTP credentials (SMTP_USER/SMTP_PASSWORD) not configured."
+        logger.info(f"No SMTP credentials provided. Automated background delivery skipped.")
 
     return {
         "status": "success",
         "email": req.email,
         "name": req.name,
         "provider": req.provider,
-        "email_dispatched": email_sent or True,
+        "email_dispatched": email_sent,
+        "delivery_error": delivery_error,
         "notification_message": f"Security alert: Your Google account ({req.email}) is securely shared with TripSaathi Tour AI."
     }
 
