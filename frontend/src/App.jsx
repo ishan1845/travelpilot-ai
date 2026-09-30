@@ -16,6 +16,7 @@ import RefreshSavePromptModal from './components/RefreshSavePromptModal';
 import TransportationPage from './components/TransportationPage';
 import Footer from './components/Footer';
 import NamasteAvatar from './components/NamasteAvatar';
+import GoogleAuthPage from './components/GoogleAuthPage';
 import { 
   Sparkles, Compass, MapPin, Calendar, IndianRupee, 
   ShieldCheck, AlertCircle, PlayCircle, Users, Bookmark, Check,
@@ -26,6 +27,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || (window.location.port === "517
 const API_BASE_FALLBACK = import.meta.env.VITE_API_BASE || (window.location.port === "5173" ? "http://127.0.0.1:8000" : "");
 const STORAGE_KEY = "travelpilot_saved_trips_v2";
 const DRAFT_STORAGE_KEY = "travelpilot_active_draft_v2";
+const AUTH_STORAGE_KEY = "travelpilot_google_user_v1";
 
 async function safeApiFetch(endpoint, options = {}) {
   try {
@@ -57,6 +59,36 @@ export default function App() {
   const [refreshPromptModal, setRefreshPromptModal] = useState({ isOpen: false, trip: null });
   const [showDashboardSection, setShowDashboardSection] = useState(false);
   const [isCopilotOpen, setIsCopilotOpen] = useState(false);
+
+  // Authenticated Google User State
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const stored = localStorage.getItem(AUTH_STORAGE_KEY);
+      if (stored) return JSON.parse(stored);
+    } catch (e) {}
+    return null;
+  });
+  const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
+
+  const handleGoogleLogin = (user) => {
+    setCurrentUser(user);
+    setIsSwitchingAccount(false);
+    try {
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+    } catch (e) {}
+    setSaveToast(`Welcome, ${user.name}! Google Account Connected.`);
+    setTimeout(() => setSaveToast(null), 3000);
+  };
+
+  const handleGoogleLogout = () => {
+    setCurrentUser(null);
+    setIsSwitchingAccount(false);
+    try {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+    } catch (e) {}
+    setSaveToast("Signed out of Google Account.");
+    setTimeout(() => setSaveToast(null), 2500);
+  };
 
   const todayStr = new Date().toISOString().split('T')[0];
   const defaultEnd = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -636,6 +668,31 @@ export default function App() {
     }));
   };
 
+  // When user visits without being logged in (or chooses to switch accounts):
+  // Show the Google Authentication Sign-Up / Accounts selection page first
+  if (!currentUser || isSwitchingAccount) {
+    return (
+      <div className="min-h-screen text-slate-900 flex flex-col selection:bg-orange-100 selection:text-orange-900 relative">
+        {/* High-Resolution Mountain Lake Background */}
+        <IndianFlagBackground />
+
+        {/* Floating toast notification */}
+        {saveToast && (
+          <div className="fixed top-6 right-6 z-50 bg-[#19202E] text-white font-extrabold text-xs px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 animate-bounce border border-slate-700">
+            <Check className="w-4 h-4 text-[#FA5B0F]" />
+            <span>{saveToast}</span>
+          </div>
+        )}
+
+        <GoogleAuthPage 
+          onLogin={handleGoogleLogin} 
+          onCancel={currentUser ? () => setIsSwitchingAccount(false) : null}
+          currentActiveUser={currentUser}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen text-slate-900 flex flex-col selection:bg-orange-100 selection:text-orange-900 relative">
       {/* Indian Flag Watermark Background */}
@@ -659,6 +716,10 @@ export default function App() {
         setActivePage={handleNavigatePage}
         onTriggerNewTrip={handleTriggerNewTrip}
         savedCount={savedTrips.length}
+        currentUser={currentUser}
+        onLogout={handleGoogleLogout}
+        onSwitchAccount={() => setIsSwitchingAccount(true)}
+        onOpenAuthModal={() => setIsSwitchingAccount(true)}
       />
 
       {/* Main Content Area */}
