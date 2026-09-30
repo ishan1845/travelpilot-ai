@@ -60,10 +60,10 @@ export default function App() {
   const [showDashboardSection, setShowDashboardSection] = useState(false);
   const [isCopilotOpen, setIsCopilotOpen] = useState(false);
 
-  // Authenticated Google User State
+  // Authenticated User State (Stored in sessionStorage so session refreshes when user closes tab)
   const [currentUser, setCurrentUser] = useState(() => {
     try {
-      const stored = localStorage.getItem(AUTH_STORAGE_KEY);
+      const stored = sessionStorage.getItem(AUTH_STORAGE_KEY);
       if (stored) return JSON.parse(stored);
     } catch (e) {}
     return null;
@@ -74,9 +74,9 @@ export default function App() {
     setCurrentUser(user);
     setIsSwitchingAccount(false);
     try {
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+      sessionStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
     } catch (e) {}
-    setSaveToast(`Welcome, ${user.name}! Google Account Connected.`);
+    setSaveToast(`Welcome, ${user.name}! Account Connected.`);
     setTimeout(() => setSaveToast(null), 3000);
   };
 
@@ -84,9 +84,9 @@ export default function App() {
     setCurrentUser(null);
     setIsSwitchingAccount(false);
     try {
-      localStorage.removeItem(AUTH_STORAGE_KEY);
+      sessionStorage.removeItem(AUTH_STORAGE_KEY);
     } catch (e) {}
-    setSaveToast("Signed out of Google Account.");
+    setSaveToast("Signed out.");
     setTimeout(() => setSaveToast(null), 2500);
   };
 
