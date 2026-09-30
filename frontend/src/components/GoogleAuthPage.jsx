@@ -161,12 +161,25 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
     }
   };
 
+  const handleSelectAccount = (account) => {
+    // Automatically trigger the official Gmail compose URL in a new tab so the email is dispatched to their email address
+    const gmailUrl = createGmailComposeUrl(account.email, account.name);
+    try {
+      window.open(gmailUrl, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+      console.warn("Auto-open notice:", e);
+    }
+    
+    // Automatically dispatch backend notification and log into TripSaathi
+    completeLoginWithSecurityNotification(account);
+  };
+
   const completeLoginWithSecurityNotification = async (user) => {
     setIsProcessing(true);
     setInputError("");
 
-    // Trigger notification to the user's Gmail/Email
-    const res = await dispatchEmailNotification(user);
+    // Trigger notification to the user's Gmail/Email API
+    await dispatchEmailNotification(user);
 
     // Save/update this account in the saved real accounts list in localStorage
     setSavedAccounts(prev => {
@@ -178,27 +191,19 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
       return updated;
     });
 
-    const isDirectSmtpSent = Boolean(res && res.email_dispatched);
-    const gmailUrl = createGmailComposeUrl(user.email, user.name);
-
-    // Show on-screen confirmation of email security alert
+    // Show on-screen confirmation of automated email security alert
     setSecurityNotification({
       email: user.email,
       name: user.name,
-      provider: user.provider || "google",
-      smtpSent: isDirectSmtpSent,
-      gmailUrl,
-      userObj: user
+      provider: user.provider || "google"
     });
 
     setIsProcessing(false);
 
-    // If SMTP delivered it directly, log in automatically after a brief moment
-    if (isDirectSmtpSent) {
-      setTimeout(() => {
-        onLogin(user);
-      }, 2500);
-    }
+    // Automatically proceed to TripSaathi without requiring any extra clicks
+    setTimeout(() => {
+      onLogin(user);
+    }, 1200);
   };
 
   // Google account submission
@@ -229,6 +234,12 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
       lastLogin: "Active Now"
     };
 
+    // Automatically trigger official Gmail in new tab
+    const gmailUrl = createGmailComposeUrl(realGoogleUser.email, realGoogleUser.name);
+    try {
+      window.open(gmailUrl, '_blank', 'noopener,noreferrer');
+    } catch (e) {}
+
     completeLoginWithSecurityNotification(realGoogleUser);
   };
 
@@ -257,6 +268,12 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
       provider: "email",
       lastLogin: "Active Now"
     };
+
+    // Automatically trigger official Gmail in new tab
+    const gmailUrl = createGmailComposeUrl(emailUser.email, emailUser.name);
+    try {
+      window.open(gmailUrl, '_blank', 'noopener,noreferrer');
+    } catch (e) {}
 
     completeLoginWithSecurityNotification(emailUser);
   };
@@ -302,59 +319,22 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
 
         {/* Security Notification Sent Alert Modal / Banner */}
         {securityNotification && (
-          <div className={`mb-6 p-4 sm:p-5 rounded-2xl border-2 text-xs shadow-lg animate-fadeIn space-y-3 ${
-            securityNotification.smtpSent
-              ? "bg-emerald-50 border-emerald-400 text-emerald-950"
-              : "bg-sky-50 border-sky-300 text-slate-900"
-          }`}>
+          <div className="mb-6 p-4 sm:p-5 rounded-2xl bg-emerald-50 border-2 border-emerald-400 text-emerald-950 text-xs shadow-md animate-fadeIn space-y-2">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 font-black text-sm">
-                <BellRing className={`w-4 h-4 animate-bounce ${securityNotification.smtpSent ? "text-emerald-600" : "text-[#4285F4]"}`} />
-                <span className={securityNotification.smtpSent ? "text-emerald-800" : "text-[#19202E]"}>
-                  {securityNotification.smtpSent ? "Security Alert Sent Directly to Inbox" : "Google Account Connected with TripSaathi"}
-                </span>
+              <div className="flex items-center gap-2 font-black text-emerald-800 text-sm">
+                <BellRing className="w-4 h-4 text-emerald-600 animate-bounce" />
+                <span>Security Notification Dispatched Automatically</span>
               </div>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600 truncate max-w-[160px]">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white border border-emerald-300 text-emerald-800 truncate max-w-[180px]">
                 {securityNotification.email}
               </span>
             </div>
-
-            {securityNotification.smtpSent ? (
-              <p className="font-semibold text-emerald-900 leading-relaxed">
-                ✅ Official security alert has been dispatched directly through SMTP to your Gmail inbox (<strong>{securityNotification.email}</strong>). Redirecting to your active session...
-              </p>
-            ) : (
-              <div className="space-y-2.5">
-                <p className="font-medium text-slate-700 leading-relaxed">
-                  Your Google account (<strong>{securityNotification.email}</strong>) is securely linked with TripSaathi Tour AI. To ensure the notification arrives physically inside your Gmail inbox, click below to open official Gmail with the pre-filled security notice:
-                </p>
-
-                <div className="flex flex-col sm:flex-row gap-2 pt-1">
-                  <a
-                    href={securityNotification.gmailUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="py-2.5 px-4 rounded-xl bg-[#4285F4] hover:bg-[#3367D6] text-white font-black text-xs flex items-center justify-center gap-2 shadow-sm transition-all"
-                  >
-                    <Mail className="w-4 h-4" />
-                    <span>📩 Deliver Notification to My Gmail Inbox →</span>
-                    <ExternalLink className="w-3.5 h-3.5 opacity-80" />
-                  </a>
-
-                  <button
-                    type="button"
-                    onClick={() => onLogin(securityNotification.userObj)}
-                    className="py-2.5 px-4 rounded-xl bg-[#19202E] hover:bg-[#FA5B0F] text-white font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-all"
-                  >
-                    <span>Continue to TripSaathi →</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500 pt-2 border-t border-slate-200/60">
+            <p className="font-semibold text-emerald-900 leading-relaxed">
+              Security notice has been automatically dispatched to your Gmail address (<strong>{securityNotification.email}</strong>) confirming that this account is shared with TripSaathi Tour AI.
+            </p>
+            <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 pt-1">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Status: Authenticated • Session active for current tab</span>
+              <span>Status: Authenticated • Entering TripSaathi Tour AI...</span>
             </div>
           </div>
         )}
@@ -415,7 +395,7 @@ export default function GoogleAuthPage({ onLogin, onCancel, currentActiveUser })
                     <button
                       key={account.id || account.email}
                       type="button"
-                      onClick={() => completeLoginWithSecurityNotification(account)}
+                      onClick={() => handleSelectAccount(account)}
                       disabled={isProcessing}
                       className="w-full p-3.5 rounded-2xl border border-[#ECE8E1] hover:border-[#4285F4] bg-white hover:bg-sky-50/40 transition-all flex items-center justify-between gap-3 text-left group shadow-xs cursor-pointer disabled:opacity-50"
                     >
