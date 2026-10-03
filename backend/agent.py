@@ -25,14 +25,20 @@ CLAUDE_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-7-sonnet-20250219")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
 
 def call_gemini(prompt: str, system_instruction: str = "") -> str:
-    """Invokes Google Gemini REST API using standard urllib without external dependencies."""
+    """Invokes Google Gemini REST API across available models with automatic fallback."""
     key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
     if not key or key.strip() == "" or key == "your_gemini_api_key_here":
         return ""
     try:
         import urllib.request
-        # Use gemini-flash-latest directly
-        for model in ["gemini-flash-latest"]:
+        # Supported models in priority order for low latency and high quality
+        models_to_try = [
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-flash-latest"
+        ]
+        for model in models_to_try:
             try:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key.strip()}"
                 payload: Dict[str, Any] = {
@@ -45,13 +51,15 @@ def call_gemini(prompt: str, system_instruction: str = "") -> str:
                     data=json.dumps(payload).encode("utf-8"),
                     headers={"Content-Type": "application/json"}
                 )
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                with urllib.request.urlopen(req, timeout=14) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     candidates = data.get("candidates", [])
                     if candidates:
                         parts = candidates[0].get("content", {}).get("parts", [])
                         if parts:
-                            return parts[0].get("text", "").strip()
+                            res_text = parts[0].get("text", "").strip()
+                            if res_text:
+                                return res_text
             except Exception as sub_err:
                 logger.debug(f"Gemini {model} retry notice: {sub_err}")
                 continue
@@ -1127,38 +1135,84 @@ def chat_agent(
                     reply = f"'{stop.activity}' has been removed from your schedule."
                     return reply, updated_itin, "cancelled_stop"
 
-    # 6. Tomorrow morning / Tomorrow activities
-    if "tomorrow morning" in lower_q:
-        target_day = itinerary.days[1] if len(itinerary.days) > 1 else itinerary.days[0]
-        morning_stops = [s for s in target_day.stops if s.status != "cancelled" and ("09:" in s.time_slot.start or "10:" in s.time_slot.start or "08:" in s.time_slot.start)]
-        if morning_stops:
-            s = morning_stops[0]
-            return f"Tomorrow morning at {s.time_slot.start}, you are scheduled to visit **{s.activity}**.", None, None
-        first_stop = target_day.stops[0] if target_day.stops else None
-        if first_stop:
-            return f"Tomorrow morning, your day starts at {first_stop.time_slot.start} with **{first_stop.activity}**.", None, None
-        return "You have no morning activities scheduled for tomorrow.", None, None
+    # 6. Primary Semantic Intelligence via Gemini (Understands nuances & distinguishes different questions)
+    gemini_key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
+    if gemini_key and gemini_key.strip() and gemini_key != "your_gemini_api_key_here":
+        days_summary_lines = []
+        for d in itinerary.days:
+            stop_summaries = []
+            for s in d.stops:
+                status_str = " [CANCELLED]" if s.status == "cancelled" else ""
+                cost_str = f"₹{s.estimated_cost:,.0f}/person" if s.estimated_cost > 0 else "Free entry"
+                dur_str = f"{s.estimated_duration} mins" if s.estimated_duration else ""
+                notes_str = f" | Notes: {s.notes}" if s.notes else ""
+                stop_summaries.append(
+                    f"    - {s.time_slot.start}-{s.time_slot.end}: {s.activity} ({s.category}, Ticket: {cost_str}, {dur_str}){status_str}{notes_str}"
+                )
+            days_summary_lines.append(f"  Day {d.day_number} ({d.date}) - Theme: '{d.theme}':\n" + "\n".join(stop_summaries))
+        days_context = "\n".join(days_summary_lines)
 
-    if "tomorrow" in lower_q:
-        target_day = itinerary.days[1] if len(itinerary.days) > 1 else itinerary.days[0]
-        stops = [s.activity for s in target_day.stops if s.status != "cancelled"]
-        if stops:
-            return f"Tomorrow you will visit: {', '.join(stops)}.", None, None
-        return "No activities are scheduled for tomorrow.", None, None
-
-    # 7. Transportation / Travel Mode
-    if any(w in lower_q for w in ["transit", "travel mode", "flight", "road", "train", "cab", "transport", "how are we going", "how to reach"]):
         t = itinerary.metadata.transportation
-        if t:
-            return f"You are travelling by {t.mode} via **{t.route_name}** ({t.carrier_info}).", None, None
+        transit_str = f"{t.mode.capitalize()} via {t.route_name} ({t.carrier_info})" if t else itinerary.metadata.travel_mode
 
-    # 8. Budget & Cost
-    if any(w in lower_q for w in ["budget", "total budget", "cost", "total cost", "price", "how much"]):
-        if "budget" in lower_q and "cost" not in lower_q:
-            return f"Your allocated trip budget is ₹{itinerary.metadata.budget:,.0f}.", None, None
-        return f"The estimated total trip cost is ₹{itinerary.trip_totals.estimated_total_cost:,.0f} for {members} member(s).", None, None
+        history_lines = []
+        if history:
+            for h in history[-8:]:
+                r_name = "User" if h.get("role") == "user" else "Assistant"
+                t_val = h.get("text", "")
+                if t_val:
+                    history_lines.append(f"{r_name}: {t_val}")
+        history_context = "\n".join(history_lines) if history_lines else "(No previous questions in this session yet)"
 
-    # Detect city in question or destination
+        matched_p = find_matching_place(question, itinerary, history)
+        place_hint = ""
+        if matched_p:
+            p_name = matched_p["name"]
+            p_city = matched_p["city"] or dest
+            place_hint = (
+                f"\nContext on place referenced: {p_name} ({p_city})\n"
+                f"Description: {matched_p.get('description', '')}\n"
+                f"Verified ticket: ₹{matched_p.get('cost', 0):,.0f}/person\n"
+            )
+
+        sys_inst = (
+            "You are Namaste AI (🙏) — an expert, culturally knowledgeable, friendly Indian travel companion for TripSaathi.\n\n"
+            "CRITICAL INSTRUCTIONS:\n"
+            "1. UNDERSTAND THE QUESTION CAREFULLY: Read the user's question with utmost care. Understand its exact intent and distinguish it from previous questions or other topics.\n"
+            "2. CLEAR DIFFERENTIATION:\n"
+            "   - Ticket price/entry fee of a specific attraction vs. the total overall trip budget (do NOT confuse them).\n"
+            "   - Local commuting in the city (auto-rickshaw, taxi, walking, metro) vs. the intercity travel corridor.\n"
+            "   - Day 1 vs. Day 2 vs. Day 3 schedule or morning vs. afternoon/evening plans.\n"
+            "   - Historical facts vs. food recommendations vs. shopping markets.\n"
+            "   - Clothing & dress code etiquette vs. weather forecast.\n"
+            "   - When comparing places or days, highlight their distinct differences.\n"
+            "3. GROUNDED IN ITINERARY: When asked about scheduled activities, times, stops, or costs, refer accurately to the itinerary data provided.\n"
+            "4. CULTURAL & PRACTICAL INSIGHTS: Provide authentic, practical, and helpful travel tips.\n"
+            "5. TONE & FORMAT: Welcoming, courteous, respectful (start naturally with 'Namaste! 🙏'). Use clean markdown with bolding and bullet points. Keep responses focused and readable (2-4 paragraphs or clear bullet lists).\n"
+            "6. CURRENCY: Always use Indian Rupees (₹).\n"
+            "7. NO LINKS UNLESS ASKED: Do NOT include URLs or links unless the user explicitly asked for a link, website, or redirection.\n"
+            "8. OFF-TOPIC QUESTIONS: If asked something completely outside travel (coding, math, politics), politely say you specialize in their journey to " + dest + "."
+        )
+
+        user_prompt = (
+            f"Trip Overview:\n"
+            f"- Destination: {dest}\n"
+            f"- Travel Dates: {itinerary.metadata.start_date} to {itinerary.metadata.end_date} ({members} members)\n"
+            f"- Intercity Transit: {transit_str}\n"
+            f"- Total Trip Budget: ₹{itinerary.metadata.budget:,.0f} | Estimated Trip Cost: ₹{itinerary.trip_totals.estimated_total_cost:,.0f}\n\n"
+            f"Day-by-Day Scheduled Stops:\n{days_context}\n"
+            f"{place_hint}\n"
+            f"Conversation History:\n{history_context}\n\n"
+            f"Current User Question: {question}"
+        )
+
+        gemini_reply = call_gemini(user_prompt, sys_inst)
+        if gemini_reply and "irrelevant question" not in gemini_reply.lower():
+            return gemini_reply, None, None
+
+    # =========================================================================
+    # Fallback Rules Engine: Differentiates Question Types If AI API is Offline
+    # =========================================================================
     all_known_cities = [
         "chennai", "delhi", "varanasi", "kashi", "agra", "jaipur", "mumbai", "goa", "kerala",
         "kolkata", "bangalore", "bengaluru", "hyderabad", "amritsar", "udaipur", "vadodara",
@@ -1178,12 +1232,65 @@ def chat_agent(
 
     target_city = mentioned_city or dest_city
 
-    # 9. List Places Query (e.g. "top 10 places in chennai", "list of places to visit", "what are the places")
+    # 7. Specific Stop Ticket Price vs Overall Trip Budget
+    matched_place = find_matching_place(question, itinerary, history)
+    if matched_place and any(w in lower_q for w in ["ticket", "entry", "fee", "cost", "price", "how much"]):
+        p_cost = matched_place["cost"]
+        cost_str = f"₹{p_cost:,.0f}/person (Total: ₹{p_cost * members:,.0f} for {members} members)" if p_cost > 0 else "Free Entry (no ticket required)"
+        return (
+            f"Namaste! 🙏 Entry ticket details for **{matched_place['name']}** in {matched_place['city'] or dest}:\n\n"
+            f"• **Ticket Fee**: {cost_str}\n"
+            f"• **Category**: {matched_place['category']}\n"
+            f"• **Visiting Note**: {matched_place.get('description', '') or 'Make sure to carry a valid government photo ID.'}"
+        ), None, None
+
+    if any(w in lower_q for w in ["total budget", "allocated budget", "overall budget", "trip budget"]):
+        return f"Namaste! 🙏 Your total allocated trip budget is ₹{itinerary.metadata.budget:,.0f} for {members} member(s).", None, None
+
+    if any(w in lower_q for w in ["total cost", "entire cost", "trip cost", "how much overall", "estimated cost"]):
+        return f"Namaste! 🙏 The estimated total trip cost is ₹{itinerary.trip_totals.estimated_total_cost:,.0f} across {itinerary.trip_totals.total_activities} scheduled stops for {members} member(s).", None, None
+
+    # 8. Local City Commuting vs Intercity Travel Corridor
+    if any(w in lower_q for w in ["cab", "taxi", "auto", "rickshaw", "metro", "locally", "get around", "commute"]):
+        return (
+            f"Namaste! 🙏 For getting around locally in **{dest}**:\n\n"
+            f"• **App-based Cabs**: Uber and Ola are widely available for city travel.\n"
+            f"• **Auto-Rickshaws & E-Rickshaws**: Best for navigating old city bazaars and narrow lanes near monuments.\n"
+            f"• **Tip**: Agree on meter fare or fix the rate before boarding street autos."
+        ), None, None
+
+    if any(w in lower_q for w in ["transit", "travel mode", "flight", "road", "train", "how are we going", "how to reach"]):
+        t = itinerary.metadata.transportation
+        if t:
+            return f"Namaste! 🙏 You are travelling to {dest} by {t.mode} via **{t.route_name}** ({t.carrier_info}).", None, None
+
+    # 9. Schedule Questions (Tomorrow Morning vs Tomorrow vs Specific Day)
+    if "tomorrow morning" in lower_q:
+        target_day = itinerary.days[1] if len(itinerary.days) > 1 else itinerary.days[0]
+        morning_stops = [s for s in target_day.stops if s.status != "cancelled" and any(h in s.time_slot.start for h in ["08:", "09:", "10:"])]
+        if morning_stops:
+            s = morning_stops[0]
+            return f"Namaste! 🙏 Tomorrow morning at {s.time_slot.start}, you are scheduled to visit **{s.activity}** ({s.category}).", None, None
+        first_stop = target_day.stops[0] if target_day.stops else None
+        if first_stop:
+            return f"Namaste! 🙏 Tomorrow morning starts at {first_stop.time_slot.start} with **{first_stop.activity}**.", None, None
+
+    if "tomorrow" in lower_q or "day 2" in lower_q:
+        target_day = itinerary.days[1] if len(itinerary.days) > 1 else itinerary.days[0]
+        stops = [f"**{s.activity}** ({s.time_slot.start}-{s.time_slot.end})" for s in target_day.stops if s.status != "cancelled"]
+        if stops:
+            return f"Namaste! 🙏 Tomorrow (Day {target_day.day_number}) you have scheduled:\n\n" + "\n".join([f"• {st}" for st in stops]), None, None
+
+    if "day 1" in lower_q:
+        target_day = itinerary.days[0]
+        stops = [f"**{s.activity}** ({s.time_slot.start}-{s.time_slot.end})" for s in target_day.stops if s.status != "cancelled"]
+        return f"Namaste! 🙏 On Day 1 you have scheduled:\n\n" + "\n".join([f"• {st}" for st in stops]), None, None
+
+    # 10. List Places Query
     is_list_places_q = bool(
         re.search(r'\b(top\s*\d+|list\s*(of)?|best places|places to visit|must visit|attractions|spots to see|what are the places|show me places)\b', lower_q) or
         (re.search(r'\bplaces\b', lower_q) and (mentioned_city or any(w in lower_q for w in ["visit", "see", "top", "good", "famous"])))
     )
-
     if is_list_places_q and target_city in CITY_KNOWLEDGE and CITY_KNOWLEDGE[target_city].get("top_places"):
         places_list = CITY_KNOWLEDGE[target_city]["top_places"]
         city_display = target_city.capitalize()
@@ -1192,224 +1299,100 @@ def chat_agent(
             lines.append(f"{idx}. **{p_name}** ({p_cost})")
             lines.append(f"   • {p_desc}")
             lines.append(f"   • *Highlight*: {p_highlight}\n")
-        lines.append("Feel free to ask 'what is [place] famous for', ask for 'another place', or request a direct link!")
+        lines.append("Feel free to ask 'what is [place] famous for' or request a direct map link!")
         return "\n".join(lines), None, None
 
-    # 10. 'Another Place' / 'Next Place' Query (Cycles through unmentioned places from top_places or itinerary)
+    # 11. Another Place / Next Place Query
     is_next_place_q = bool(
         re.search(r'\b(another|next|other|different|one more|what else|something else)\s*(place|spot|attraction|monument|option|location|destination|stop)?\b', lower_q) and
         not any(p in lower_q for p in ["tell me more", "more info", "more details", "about it"])
     )
-
-    if is_next_place_q:
+    if is_next_place_q and target_city in CITY_KNOWLEDGE:
         discussed = set()
         if history:
             for h in history:
-                txt = h.get("text", "")
-                if "must-visit places in" in txt.lower() or "here are the top" in txt.lower():
-                    continue
-                txt_lower = txt.lower()
-                if target_city and target_city in CITY_KNOWLEDGE:
-                    for item in CITY_KNOWLEDGE[target_city].get("top_places", []):
-                        core = item[0].split("(")[0].strip().lower()
-                        if core in txt_lower:
-                            discussed.add(core)
+                txt = (h.get("text", "") or "").lower()
+                for item in CITY_KNOWLEDGE[target_city].get("top_places", []):
+                    core = item[0].split("(")[0].strip().lower()
+                    if core in txt:
+                        discussed.add(core)
+        for item in CITY_KNOWLEDGE[target_city].get("top_places", []):
+            core = item[0].split("(")[0].strip().lower()
+            if core not in discussed:
+                p_name, p_desc, p_cost, p_highlight = item
+                city_display = target_city.capitalize()
+                return (
+                    f"Namaste! 🙏 Here is another wonderful place to explore in **{city_display}**:\n\n"
+                    f"🏛️ **{p_name}** ({p_cost})\n\n"
+                    f"{p_desc}\n\n"
+                    f"• **Highlight**: {p_highlight}\n"
+                    f"• **Visitor Tip**: Ideal for visiting in the morning or late afternoon."
+                ), None, None
 
-        next_pick = None
-        if target_city and target_city in CITY_KNOWLEDGE:
-            for item in CITY_KNOWLEDGE[target_city].get("top_places", []):
-                core = item[0].split("(")[0].strip().lower()
-                if core not in discussed:
-                    next_pick = item
-                    break
-
-        if next_pick:
-            p_name, p_desc, p_cost, p_highlight = next_pick
-            city_display = (target_city or dest).capitalize()
-            return (
-                f"Namaste! 🙏 Here is another wonderful place to explore in **{city_display}**:\n\n"
-                f"🏛️ **{p_name}** ({p_cost})\n\n"
-                f"{p_desc}\n\n"
-                f"• **Highlight**: {p_highlight}\n"
-                f"• **Visitor Tip**: Ideal for visiting in the morning or late afternoon for the best experience.\n\n"
-                f"Would you like to know more about its history, or shall I suggest another place?"
-            ), None, None
-        elif target_city and target_city in CITY_KNOWLEDGE:
-            first_item = CITY_KNOWLEDGE[target_city]["top_places"][0]
-            city_display = target_city.capitalize()
-            return (
-                f"Namaste! 🙏 You've explored the main highlights of **{city_display}**! "
-                f"Another classic stop you can revisit is **{first_item[0]}** ({first_item[2]}), or I can share recommendations for local cuisine and markets!"
-            ), None, None
-
-    # 11. Deep-Dive Query ('so what it is famous for', 'why is it famous', 'tell me more about this place')
+    # 12. Deep-Dive Query ('what is it famous for')
     is_deep_dive_q = bool(
         re.search(r'\b(famous for|why (is|it is) famous|tell me more|what is special|history of|details of|background of)\b', lower_q) or
         (re.search(r'\b(famous|famour|famus|known for)\b', lower_q) and any(w in lower_q for w in ["it", "this", "that", "why", "what"]))
     )
-
-    if is_deep_dive_q:
-        active_place_info = None
-        # Check query directly first
-        direct_match = find_matching_place(question, itinerary, history=None)
-        if direct_match:
-            active_place_info = (direct_match["name"], direct_match.get("description", ""), f"₹{direct_match['cost']:,.0f}/person" if direct_match['cost'] > 0 else "Free Entry", "")
-        elif history:
-            for prev in reversed(history[-6:]):
-                prev_text = prev.get("text", "")
-                if target_city and target_city in CITY_KNOWLEDGE:
-                    for item in CITY_KNOWLEDGE[target_city].get("top_places", []):
-                        core = item[0].split("(")[0].strip().lower()
-                        if core in prev_text.lower() or item[0].lower() in prev_text.lower():
-                            active_place_info = item
-                            break
-                if active_place_info:
-                    break
-                p_match = find_matching_place(prev_text, itinerary, history=None)
-                if p_match:
-                    active_place_info = (p_match["name"], p_match.get("description", ""), f"₹{p_match['cost']:,.0f}/person" if p_match['cost'] > 0 else "Free Entry", "")
-                    break
-
-        if active_place_info:
-            p_name = active_place_info[0]
-            p_desc = active_place_info[1]
-            p_cost = active_place_info[2]
-            p_highlight = active_place_info[3] if len(active_place_info) > 3 else "Magnificent architecture and rich heritage"
-            city_display = (target_city or dest).capitalize()
-            return (
-                f"**{p_name}** in {city_display} is famous for:\n\n"
-                f"• **Historical & Cultural Significance**: {p_desc}\n"
-                f"• **Key Highlights**: {p_highlight}.\n"
-                f"• **Ticket & Entry**: {p_cost}.\n"
-                f"• **Traveler Experience**: One of {city_display}'s defining destinations, offering deep cultural insights and unforgettable photo spots.\n\n"
-                f"Feel free to ask for 'another place' to continue exploring, or say 'link of {p_name}' for directions and photos!"
-            ), None, None
-
-    # Check for 'what is [city] famous for' (including typos like 'what id delhi famous')
-    is_city_famous_q = bool(
-        mentioned_city and (
-            re.search(r'\b(famous|famour|famus|known for|special|highlights|attraction|attractions)\b', lower_q) or
-            re.search(r'\bwhat (is|id|are)\b.*\b(famous|known|in|special)\b', lower_q) or
-            re.search(r'\bwhy (visit|go to)\b', lower_q) or
-            (len(lower_q.split()) <= 6 and any(w in lower_q for w in ["what", "why", "about", "tell me"]))
-        )
-    )
-
-    is_explicit_city_query = bool(
-        re.search(r'\b(city|state|capital)\b', lower_q) or
-        re.search(r'\bwhat (id|is|are)\b.*\b(' + '|'.join(all_known_cities) + r')\b', lower_q) or
-        re.search(r'\b(' + '|'.join(all_known_cities) + r')\b\s+(is\s+)?(famous|highlights)\b', lower_q) or
-        re.search(r'\bwhy (visit|go to)\s+(' + '|'.join(all_known_cities) + r')\b', lower_q)
-    )
-
-    if (is_explicit_city_query or is_city_famous_q) and target_city in CITY_KNOWLEDGE:
-        c_info = CITY_KNOWLEDGE[target_city]
-        city_display = target_city.capitalize()
+    if is_deep_dive_q and matched_place:
+        p_name = matched_place["name"]
+        p_desc = matched_place.get("description", "")
+        p_cost = f"₹{matched_place['cost']:,.0f}/person" if matched_place['cost'] > 0 else "Free Entry"
         return (
-            f"**{city_display}** is celebrated for its remarkable heritage and attractions:\n\n"
-            f"{c_info['famous_for']}\n\n"
-            f"• **Must-try food**: {c_info['food']}\n"
-            f"• **Best time to visit**: {c_info['best_time']}\n\n"
-            f"Ask me for 'top 10 places in {city_display}' to see the full sightseeing list!"
+            f"Namaste! 🙏 **{p_name}** is famous for:\n\n"
+            f"• **Significance**: {p_desc}\n"
+            f"• **Category**: {matched_place['category']}\n"
+            f"• **Ticket & Entry**: {p_cost}\n"
+            f"• **Visitor Experience**: One of the most iconic highlights, known for its rich heritage and photography vantage points."
         ), None, None
 
-    # Inquiries about Specific Itinerary Stops or Landmarks
-    specific_place = find_matching_place(question, itinerary, history)
-    if specific_place:
-        p_name = specific_place["name"]
-        p_city = specific_place["city"] or dest
-        p_cost = specific_place["cost"]
-        cost_str = f"Verified entry ticket is ₹{p_cost:,.0f}/person." if p_cost > 0 else "Entry is free (no ticket required)."
-        desc = specific_place.get("description") or specific_place.get("notes") or f"a celebrated historic attraction in {p_city}."
-        lead = f"**{p_name}** ({p_city}) is famous as {desc.lower() if not desc.startswith('A') else desc}"
-        if not lead.endswith('.'):
-            lead += '.'
-        reply = (
-            f"{lead} {cost_str}\n\n"
-            f"Feel free to ask 'what is it famous for' for deep-dive history, or 'another place' to discover more spots!"
-        )
-        return reply, None, None
+    # 13. Specific Place Direct Inquiry
+    if matched_place:
+        p_name = matched_place["name"]
+        p_city = matched_place["city"] or dest
+        p_cost = matched_place["cost"]
+        cost_str = f"Verified entry ticket is ₹{p_cost:,.0f}/person." if p_cost > 0 else "Entry is free."
+        desc = matched_place.get("description") or f"a celebrated attraction in {p_city}."
+        return (
+            f"Namaste! 🙏 **{p_name}** ({p_city}) is {desc} {cost_str}\n\n"
+            f"You can ask me 'what is it famous for' or 'how do we reach there'!"
+        ), None, None
 
-    # If asking about city cuisine/weather/shopping without naming a specific place
+    # 14. Food / Weather / Shopping in City
     if target_city and target_city in CITY_KNOWLEDGE:
         c_info = CITY_KNOWLEDGE[target_city]
         city_display = target_city.capitalize()
-
         if any(w in lower_q for w in ["food", "eat", "dishes", "cuisine", "street food", "restaurant", "snack"]):
-            return f"When in **{city_display}**, here are the top local specialties to try:\n{c_info['food']}", None, None
-
+            return f"Namaste! 🙏 When in **{city_display}**, here are the top local specialties to try:\n\n{c_info['food']}", None, None
         if any(w in lower_q for w in ["weather", "best time", "season", "climate", "temperature", "month", "when to visit"]):
-            return f"The best time to visit **{city_display}** is {c_info['best_time']}", None, None
-
+            return f"Namaste! 🙏 The best time to visit **{city_display}** is {c_info['best_time']}", None, None
         if any(w in lower_q for w in ["shopping", "market", "bazaar", "buy", "souvenir"]):
-            return f"Top shopping spots and markets in **{city_display}** include: {c_info['shopping']}", None, None
+            return f"Namaste! 🙏 Top shopping spots in **{city_display}** include: {c_info['shopping']}", None, None
 
-    # Packing / Attire questions
+    # 15. Packing & Safety
     if any(w in lower_q for w in ["pack", "wear", "dress", "clothes", "clothing"]):
         return (
-            f"Recommended packing essentials for **{dest}**:\n"
-            f"• Comfortable footwear for walking tours and heritage exploration.\n"
-            f"• Modest, breathable clothing suitable for temple and cultural visits (covering shoulders and knees).\n"
-            f"• Sun protection (sunglasses, hat, sunscreen) and a light layer for air-conditioned transit or cool evenings.\n"
+            f"Namaste! 🙏 Recommended packing essentials for **{dest}**:\n\n"
+            f"• Comfortable footwear for walking tours and monument exploration.\n"
+            f"• Modest, breathable cotton clothing suitable for sacred sites.\n"
+            f"• Sun protection (sunglasses, hat, sunscreen) and a light layer for air-conditioned transit.\n"
             f"• Valid ID card and a reusable water bottle."
         ), None, None
 
-    # Safety questions
     if any(w in lower_q for w in ["safe", "safety", "precaution", "scam", "emergency"]):
         return (
-            f"Tips for a safe and hassle-free trip to **{dest}**:\n"
-            f"• Stick to authorized ticket counters or official portals for monument tickets.\n"
-            f"• Use verified app-based cabs (Uber/Ola) or prepaid government taxi/auto booths.\n"
+            f"Namaste! 🙏 Tips for a safe trip to **{dest}**:\n\n"
+            f"• Stick to authorized counters or official apps for monument tickets.\n"
+            f"• Use verified app-based cabs (Uber/Ola) or prepaid taxi/auto booths.\n"
             f"• Drink sealed bottled or filtered water.\n"
             f"• Keep emergency contacts and digital copies of your IDs handy."
         ), None, None
 
-    # Real AI Chatbot via Gemini (with full history and trip context)
-    gemini_key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
-    if gemini_key and gemini_key.strip() and gemini_key != "your_gemini_api_key_here":
-        all_stops_str = ", ".join([s.activity.split("(")[0].strip() for d in itinerary.days for s in d.stops if s.status != "cancelled"][:8])
-        history_str = ""
-        if history:
-            for h in history[-6:]:
-                role_label = "User" if h.get("role") == "user" else "Assistant"
-                history_str += f"{role_label}: {h.get('text', '')}\n"
-
-        matched_p = find_matching_place(question, itinerary, history)
-        place_hint = ""
-        if matched_p:
-            p_name = matched_p["name"]
-            p_city = matched_p["city"] or dest
-            place_hint = (
-                f"\nContext on place being discussed: {p_name} ({p_city}).\n"
-                f"Description: {matched_p.get('description', '')}\n"
-                f"Verified ticket: ₹{matched_p.get('cost', 0):,.0f}/person\n"
-            )
-
-        sys_inst = (
-            "You are Namaste AI — an intelligent, culturally knowledgeable, and friendly travel companion (represented by folded hands Namaste 🙏).\n"
-            "RULES:\n"
-            f"1. You are actively assisting with the user's trip to {dest}.\n"
-            "2. Answer user questions directly, conversationally, and informatively in the chat.\n"
-            "3. Do NOT provide Google search or map URLs unless the user explicitly requested a link, website, URL, or redirection.\n"
-            "4. NEVER say 'Irrelevant question.'. Always be helpful, engaging, and clear (2-4 concise sentences).\n"
-            "5. If asked something completely outside travel (like writing code), politely say you specialize in their trip."
-        )
-
-        user_prompt = (
-            f"Destination: {dest}\n"
-            f"Dates: {itinerary.metadata.start_date} to {itinerary.metadata.end_date} ({members} members)\n"
-            f"Scheduled Stops: {all_stops_str}\n"
-            f"{place_hint}\n"
-            f"Conversation History:\n{history_str}\n"
-            f"User Question: {question}"
-        )
-
-        gemini_reply = call_gemini(user_prompt, sys_inst)
-        if gemini_reply and "irrelevant question" not in gemini_reply.lower():
-            return gemini_reply, None, None
-
-    # Fallback: Friendly, direct conversational response
+    # 16. Dynamic Contextual Fallback (Customized to Question and Destination)
+    first_stops = [s.activity for s in itinerary.days[0].stops[:3]] if itinerary.days else []
+    stops_str = ", ".join(first_stops) if first_stops else dest
     return (
-        f"Namaste! 🙏 Your trip to **{dest}** includes {itinerary.trip_totals.total_activities} scheduled stops from {itinerary.metadata.start_date} to {itinerary.metadata.end_date}. "
-        f"I can help you with top attractions, local food, culture, timings, tickets, or schedule adjustments right here in the chat!"
+        f"Namaste! 🙏 Regarding your inquiry about **'{question.strip(' ?.!')}'** for your trip to **{dest}**:\n\n"
+        f"Your itinerary currently features {itinerary.trip_totals.total_activities} scheduled stops, including **{stops_str}**.\n\n"
+        f"You can ask me specifically about visiting hours, ticket prices (₹), local dishes, transit options, or requesting schedule changes!"
     ), None, None
